@@ -1,0 +1,94 @@
+trigger:
+- main
+
+pool:
+  name: orderservice-project-pool
+
+variables:
+- group: orderservice-project   # <-- Your variable group with secrets
+
+- name: PROJECT_ID
+  value: rich-elixir-479517-m8
+- name: REGION
+  value: us-central1
+- name: CLUSTER_NAME
+  value: orderservice-project-cluster
+- name: IMAGE_REPO
+  value: rich-elixir-479517-m8/orderservice-project-demo/app
+
+steps:
+
+# ✅ 1️⃣ Checkout Source
+- checkout: self
+  displayName: "Checkout Source Code"
+
+# ✅ 2️⃣ Download Secure GCP Service Account Key
+- task: DownloadSecureFile@1
+  name: gcpkey
+  inputs:
+    secureFile: orderservice-project-demo.json
+  displayName: "Download GCP Service Account Key"
+
+# ✅ 3️⃣ Install Google Cloud SDK
+- script: |
+    sudo apt-get update
+    sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
+
+    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+      | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+      | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+
+    sudo apt-get update
+    sudo apt-get install -y google-cloud-cli kubectl
+  displayName: "Install Google Cloud SDK & kubectl"
+
+# ✅ 4️⃣ Install GKE Auth Plugin (FIXES YOUR ERROR)
+- script: |
+    sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+    echo "✅ gke-gcloud-auth-plugin installed"
+  displayName: "Install GKE Auth Plugin"
+
+# ✅ 5️⃣ Authenticate to GCP & GKE (SECURE FILE METHOD)
+- script: |
+    gcloud auth activate-service-account --key-file=$(gcpkey.secureFilePath)
+    gcloud config set project $(PROJECT_ID)
+    gcloud container clusters get-credentials $(CLUSTER_NAME) --region $(REGION)
+
+    kubectl get nodes
+  displayName: "Authenticate to GKE"
+
+# ✅ 6️⃣ Login to Google Artifact Registry
+- script: |
+    gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+  displayName: "Login to GAR"
+
+# ✅ 7️⃣ Build Docker Image (Dynamic Tag)
+- script: |
+    IMAGE_URI="us-central1-docker.pkg.dev/$(IMAGE_REPO):$(Build.BuildNumber)"
+
+    docker build -t $IMAGE_URI .
+    docker tag $IMAGE_URI us-central1-docker.pkg.dev/$(IMAGE_REPO):latest
+
+    echo "##vso[task.setvariable variable=IMAGE_URI]$IMAGE_URI"
+    echo "✅ Built Image: $IMAGE_URI"
+  displayName: "Build Docker Image"
+
+# ✅ 8️⃣ Push Docker Image to GAR
+- script: |
+    docker push us-central1-docker.pkg.dev/$(IMAGE_REPO):$(Build.BuildNumber)
+    docker push us-central1-docker.pkg.dev/$(IMAGE_REPO):latest
+  displayName: "Push Docker Image to GAR"
+
+# ✅ 9️⃣ Deploy to GKE using GitHub Deployment YAML
+- script: |
+    echo "Deploying Image: $(IMAGE_URI)"
+
+    sed -i "s|IMAGE_PLACEHOLDER|$(IMAGE_URI)|g" deployment/deployment.yaml
+
+    kubectl apply -f deployment/deployment.yaml
+    kubectl apply -f deployment/service.yaml
+
+    echo "✅ Deployment Completed Successfully"
+  displayName: "Deploy to GKE"
