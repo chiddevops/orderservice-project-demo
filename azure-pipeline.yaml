@@ -2,7 +2,7 @@ trigger:
 - main
 
 pool:
-  name: orderservice-project-pool
+  vmImage: ubuntu-latest
 
 variables:
 - group: orderservice-project   # <-- Your variable group with secrets
